@@ -1507,7 +1507,12 @@
         async storeFeed(feedObj) {
             await this.init();
             let objectStore = this.db.transaction(["feeds"], "readwrite").objectStore("feeds");
-            objectStore.put(feedObj);
+            let key = await objectStore.index("url").getKey(feedObj.url);
+            if (key) {
+                await objectStore.put(feedObj, key);
+            } else {
+                await objectStore.put(feedObj);
+            }
         }
     }
 
@@ -1731,7 +1736,7 @@
 
         ndrdb.loadFeed(href).then(feed => {
             let now = new Date();
-            if (feed != null || (now.getTime() - feed.lastAccess.getTime() <= 60 * 60 * 1000) || feed.status === 404) {
+            if (feed != null && ((now.getTime() - feed.lastAccess.getTime() <= 60 * 60 * 1000) || feed.status === 404)) {
                 let feedObj = parseFeedObjectFromString(feed.text);
                 feedObj.url = href;
                 feedObj.status = feed.status === 200 ? 'ok' : 'ng';
