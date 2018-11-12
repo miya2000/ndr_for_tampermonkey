@@ -11,6 +11,7 @@
 // @grant GM.deleteValue
 // @grant GM.listValues
 // @run-at document-start
+// @require https://raw.githubusercontent.com/jakearchibald/idb/2.1.1/lib/idb.js
 // ==/UserScript==
 (function() {
     'use strict';
@@ -1487,6 +1488,31 @@
         };
     })();
 
+    //TODO: error handling..
+    class NDRDB {
+        constructor() {
+        }
+        async init() {
+            if (!this.db) this.db = await idb.open('ndr', 1, upgradeDB => this._createDB(upgradeDB));
+        }
+        _createDB(upgradeDB) {
+            let objectStore = upgradeDB.createObjectStore("feeds", { autoIncrement : true });
+            objectStore.createIndex("url", "url", { unique: true });
+        }
+        async loadFeed(url) {
+            await this.init();
+            let objectStore = this.db.transaction(["feeds"]).objectStore("feeds");
+            return await objectStore.index("url").get(url);
+        }
+        async storeFeed(feedObj) {
+            await this.init();
+            let objectStore = this.db.transaction(["feeds"], "readwrite").objectStore("feeds");
+            objectStore.put(feedObj);
+        }
+    }
+
+    let ndrdb = new NDRDB();
+
     /**
      * class RequestPool.
      *   limit number of Ajax request.
@@ -1703,69 +1729,65 @@
 
     function feedRequest(href, feedCallback) {
 
-        /*
-        let storage = getStorage();
-        if (storage != null && storage.isLoaded) {
-            let feedJSON = storage.getData(url, 'feeds');
-            let feedData = feedJSON ? fromJSON(feedJSON) : null;
-            if (feedData) {
-                setTimeout(function() {
-                    let feedObj = parseFeedObjectFromString(feedData.responseText);
+        ndrdb.loadFeed(href).then(feed => {
+            let now = new Date();
+            if (feed != null || (now.getTime() - feed.lastAccess.getTime() <= 60 * 60 * 1000) || feed.status === 404) {
+                let feedObj = parseFeedObjectFromString(feed.text);
+                feedObj.url = href;
+                feedObj.status = feed.status === 200 ? 'ok' : 'ng';
+                if (!feedObj.link) {
+                    feedObj.link = href;
+                }
+                feedCallback(feedObj);
+                return;
+            }
+
+            httpRequest(href, callback);
+            function callback(e) {
+                let feedObj;
+                let lastAccess = new Date();
+                if (e.readyState < 4) { // timeout.
+                    feedObj = {
+                        title : href,
+                        link : href,
+                        description: NDR.lang.ABORTED_CONNECTION,
+                        items : [],
+                        url : href,
+                        status : 'timeout'
+                    };
+                }
+                else if (e.responseText == "") {
+                    feedObj = {
+                        title : href,
+                        link : href,
+                        description: NDR.lang.MISSING_DATA,
+                        items : [],
+                        url : href,
+                        status : 'nodata'
+                    };
+                }
+                else if (!/^\s*</.test(e.responseText)) { // deleted mylist. etc.
+                    feedObj = {
+                        title : href,
+                        link : href,
+                        description: NDR.lang.INVALID_FEED + '\n(' + /\s*(.*)$/m.exec(e.responseText)[0].substring(0, 300) + ')',
+                        items : [],
+                        url : href,
+                        status : 'invalid'
+                    };
+                }
+                else {
+                    ndrdb.storeFeed({ url: href, lastAccess: lastAccess, status: e.status, text: e.responseText});
+                    feedObj = parseFeedObjectFromString(e.responseText);
                     feedObj.url = href;
                     feedObj.status = 'ok';
                     if (!feedObj.link) {
                         feedObj.link = href;
                     }
-                    feedCallback(feedObj);
-                }, 10);
-                return;
-            }
-        }
-        */
-
-        httpRequest(href, callback);
-        function callback(e) {
-            let feedObj;
-            if (e.readyState < 4) { // timeout.
-                feedObj = {
-                    title : href,
-                    link : href,
-                    description: NDR.lang.ABORTED_CONNECTION,
-                    items : [],
-                    url : href,
-                    status : 'timeout'
-                };
-            }
-            else if (e.responseText == "") {
-                feedObj = {
-                    title : href,
-                    link : href,
-                    description: NDR.lang.MISSING_DATA,
-                    items : [],
-                    url : href,
-                    status : 'nodata'
-                };
-            }
-            else if (!/^\s*</.test(e.responseText)) { // deleted mylist. etc.
-                feedObj = {
-                    title : href,
-                    link : href,
-                    description: NDR.lang.INVALID_FEED + '\n(' + /\s*(.*)$/m.exec(e.responseText)[0].substring(0, 300) + ')',
-                    items : [],
-                    url : href,
-                    status : 'invalid'
-                };
-            }
-            else {
-                feedObj = parseFeedObjectFromString(e.responseText);
-                feedObj.url = href;
-                feedObj.status = 'ok';
-                if (!feedObj.link) {
-                    feedObj.link = href;
                 }
-            }
-            feedCallback(feedObj);
-        };
+                feedCallback(feedObj);
+            };
+        });
     }
 
     /**
